@@ -531,7 +531,16 @@ public:
         }
         if (XR_FAILED(r)) {
             static XrResult s_last = XR_SUCCESS;
-            if (s_last != r) { s_last = r; LOGW("[xr] xrEndFrame: %s", XrStr(r)); }
+            if (s_last != r) {
+                s_last = r;
+                char resultName[XR_MAX_RESULT_STRING_SIZE]{};
+                const XrResult named = xrResultToString(instance_, r, resultName);
+                LOGW("[xr] xrEndFrame: %s (%d), runtime=%s | layers=%u projection=%d cinema=%d hud=%d displayTime=%lld",
+                     XrStr(r), (int)r,
+                     XR_SUCCEEDED(named) ? resultName : "(unavailable)",
+                     count, (int)layer.projectionValid, (int)layer.quadValid,
+                     (int)layer.hudValid, (long long)ei.displayTime);
+            }
             return false;
         }
         return true;
