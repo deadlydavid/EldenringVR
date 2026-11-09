@@ -467,6 +467,26 @@ bool RunOnce(int attempt) {
             }
         }
     }
+    // Module statics can point 0x18 bytes before the CSTask object. In that
+    // case the task-group vector appears at +0x30, rather than CSTask's +0x18.
+    // Only correct the pointer when BOTH the vtable and vector validate.
+    if (taskObj && vecOff == 0x30) {
+        uint8_t* adjusted = taskObj + 0x18;
+        if (Readable(adjusted, 8)) {
+            void** adjustedVt = *(void***)adjusted;
+            if (adjustedVt && LooksLikeVTable(adjustedVt, 6)) {
+                uint8_t* checkEntry = nullptr;
+                size_t checkStride = 0, checkOff = 0;
+                if (VectorInObject(adjusted, 0x40, &checkEntry, &checkStride, &checkOff) == 1 &&
+                    checkEntry == entry0 && checkStride == stride && checkOff == 0x18) {
+                    LOGI("[m2] corrected CSTask owner: %p -> %p (static was -0x18)",
+                         (void*)taskObj, (void*)adjusted);
+                    taskObj = adjusted;
+                    vecOff = checkOff;
+                }
+            }
+        }
+    }
     if (taskObj) {
         LOGI("[m2] owner object `this` = %p", (void*)taskObj);
         // The callee vtable is the CSTask's OWN vptr at +0. CSTask : CSTaskBase is single
@@ -1401,9 +1421,15 @@ void DoSecondPass(void* self, void* a, void* b) {
                 // Must be a mutable .data cell holding a plausible measured dt - never a
                 // read-only constant.
                 MEMORY_BASIC_INFORMATION mbi{};
-                const bool writable =
-                    VirtualQuery(s_dtGlobal, &mbi, sizeof(mbi)) &&
-                    (mbi.Protect & (PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READWRITE));
+                const SIZE_T queried = VirtualQuery(s_dtGlobal, &mbi, sizeof(mbi));
+                // On some Wine/Proton image mappings, writable COW pages are reported as
+                // PAGE_EXECUTE_WRITECOPY (0x80), which the original test omitted.
+                const bool writable = queried &&
+                    (mbi.Protect & (PAGE_READWRITE | PAGE_WRITECOPY |
+                                   PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY));
+                LOGI("[stereo] frame-dt global protection: query=%zu protect=0x%X type=0x%X state=0x%X",
+                     (size_t)queried, (unsigned)mbi.Protect,
+                     (unsigned)mbi.Type, (unsigned)mbi.State);
                 uint32_t cur = 0;
                 TryReadU32((uint8_t*)s_dtGlobal, &cur);
                 if (!writable || !PlausibleDtF(cur)) {
